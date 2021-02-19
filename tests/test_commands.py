@@ -39,7 +39,7 @@ def test_gsea(gseaGCT, gseaCLS, geneGMT):
     # Only tests of the command runs successfully,
     # doesnt't check the image
     tmpdir= TemporaryDirectory(dir="tests")
-    gsea(data=gseaGCT, gene_sets=geneGMT, cls=gseaCLS,
+    gsea(data=gseaGCT, gene_sets=geneGMT, cls=gseaCLS, method='abs_s2n',
          outdir=tmpdir.name, permutation_type='phenotype',
          permutation_num=10)
     tmpdir.cleanup()
@@ -75,7 +75,7 @@ def test_enrichr(genelist, geneGMT):
     tmpdir= TemporaryDirectory(dir="tests")
     enrichr(genelist, gene_sets=['KEGG_2016', geneGMT], outdir=tmpdir.name)
     tmpdir.cleanup()
-    enrichr(genelist, gene_sets='KEGG_2013,KEGG_2016', outdir=None)
+    #enrichr(genelist, gene_sets='KEGG_2013,KEGG_2016', outdir=None)
 
 def test_replot(edbDIR):
     # Only tests of the command runs successfully,

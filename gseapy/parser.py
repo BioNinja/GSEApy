@@ -10,6 +10,7 @@ from requests.packages.urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from bioservices import BioMart, BioServicesError
 from gseapy.utils import unique, DEFAULT_LIBRARY, DEFAULT_CACHE_PATH, mkdirs
+from collections.abc import Iterable
 
 def gsea_cls_parser(cls):
     """Extract class(phenotype) name from .cls file.
@@ -18,8 +19,8 @@ def gsea_cls_parser(cls):
     :return: phenotype name and a list of class vector.
     """
 
-    if isinstance(cls, list) :
-        classes = cls
+    if not isinstance(cls, str) and isinstance(cls, Iterable) :
+        classes = list(cls)
         sample_name= unique(classes)
     elif isinstance(cls, str) :
         with open(cls) as c:
@@ -28,6 +29,9 @@ def gsea_cls_parser(cls):
         sample_name = file[1].lstrip("# ").strip('\n').split(" ")
     else:
         raise Exception('Error parsing sample name!')
+    
+    if len(sample_name) != 2:
+            raise Exception("Input groups have to be 2!")
 
     return sample_name[0], sample_name[1], classes
 
@@ -35,8 +39,8 @@ def gsea_edb_parser(results_path):
     """Parse results.edb file stored under **edb** file folder.
 
     :param results_path: the .results file located inside edb folder.
-    :param index: gene_set index of gmt database, used for iterating items.
-    :return: enrichment_term, hit_index,nes, pval, fdr.
+    :return: 
+        a dict contains enrichment_term, hit_index,nes, pval, fdr.
     """
     
     xtree = ET.parse(results_path)
@@ -122,8 +126,7 @@ def gsea_gmt_parser(gmt, min_size = 3, max_size = 1000, gene_list=None):
     elif sys.version_info[0] == 2:
         genesets_filter =  {k: v for k, v in genesets_dict.iteritems() if len(v) >= min_size and len(v) <= max_size}
     else:
-        logging.error("System failure. Please Provide correct input files")
-        sys.exit(1)
+        raise Exception("System failure. Please Provide correct input files")
     if gene_list is not None:
         subsets = sorted(genesets_filter.keys())
         for subset in subsets:
@@ -139,20 +142,42 @@ def gsea_gmt_parser(gmt, min_size = 3, max_size = 1000, gene_list=None):
     logging.info("%04d gene_sets have been filtered out when max_size=%s and min_size=%s"%(filsets_num, max_size, min_size))
 
     if filsets_num == len(genesets_dict):
-        logging.error("No gene sets passed throught filtering condition!!!, try new paramters again!\n" +\
+        raise Exception("No gene sets passed throught filtering condition!!!, try new paramters again!\n" +\
                          "Note: Gene names for gseapy is case sensitive." )
-        sys.exit(1)
     else:
         return genesets_filter
 
 def get_library_name(database='Human'):
     """return enrichr active enrichr library name. 
+    see also: https://maayanlab.cloud/modEnrichr/
+
     :param str database: Select one from { 'Human', 'Mouse', 'Yeast', 'Fly', 'Fish', 'Worm' } 
+    :return: a list of enrichr libraries from selected database
     
     """
+    default = [ 'human','mouse','hs', 'mm',
+                'homo sapiens', 'mus musculus',
+                'h. sapiens', 'm. musculus']
+    organism = {
+                'Fly': ['fly', 'd. melanogaster', 'drosophila melanogaster'],
+                'Yeast': ['yeast', 's. cerevisiae', 'saccharomyces cerevisiae'],
+                'Worm': ['worm', 'c. elegans', 'caenorhabditis elegans', 'nematode'],
+                'Fish': ['fish', 'd. rerio', 'danio rerio', 'zebrafish']
+                }
+    
+    if database.lower() in default:
+        database = 'Enrichr'
+    else:
+        for k, v in organism.items():
+            if database.lower() in v :
+                database = k+'Enrichr'
+                break
 
+    if not database.endswith('Enrichr'):
+        raise LookupError("""No supported database. Please input one of these:
+                            ('Human', 'Mouse', 'Yeast', 'Fly', 'Fish', 'Worm') """)
+        return 
     # make a get request to get the gmt names and meta data from Enrichr
-
     # old code
     # response = requests.get('http://amp.pharm.mssm.edu/Enrichr/geneSetLibrary?mode=meta')
     # gmt_data = response.json()
@@ -163,16 +188,6 @@ def get_library_name(database='Human'):
     #     # only include active gmts
     #     if inst_gmt['isActive'] == True:
     #         libs.append(inst_gmt['libraryName'])
-
-
-    if database not in ['Human', 'Mouse', 'Yeast', 'Fly', 'Fish', 'Worm']:
-        sys.stderr.write("""No supported database. Please input one of these:
-                            ('Human', 'Mouse', 'Yeast', 'Fly', 'Fish', 'Worm') """)
-        return 
-    if database in ['Human', 'Mouse']: 
-        database = 'Enrichr'
-    else:
-        database += 'Enrichr'
     lib_url='http://amp.pharm.mssm.edu/%s/datasetStatistics'%database
     response = requests.get(lib_url)
     if not response.ok:
@@ -188,8 +203,8 @@ class Biomart(BioMart):
     def __init__(self, host="www.ensembl.org", verbose=False):
         """A wrapper of BioMart() from bioseverices.
 
-        How to query validated dataset, attributes, filters:
-        example:
+        How to query validated dataset, attributes, filters.
+        Example::
         >>> from gseapy.parser import Biomart 
         >>> bm = Biomart(verbose=False, host="asia.ensembl.org")
         >>> ## view validated marts
@@ -201,10 +216,11 @@ class Biomart(BioMart):
         >>> ## view validated filters
         >>> filters = bm.get_filters(dataset='hsapiens_gene_ensembl')
         >>> ## query results
+        >>> queries = ['ENSG00000125285','ENSG00000182968'] # a python list
         >>> results = bm.query(dataset='hsapiens_gene_ensembl', 
-                               attributes=['entrezgene', ‘go_id'],
-                               filters={'ensembl_gene_id': [your input list]}
-                              )         
+                            attributes=['entrezgene_id', ‘go_id'],
+                            filters={'ensembl_gene_id': queries}
+                            )         
         """
         super(Biomart, self).__init__(host=host, verbose=verbose)
         hosts=["www.ensembl.org", "asia.ensembl.org", "useast.ensembl.org"]
@@ -252,31 +268,28 @@ class Biomart(BioMart):
 
         **Note**: it will take a couple of minutes to get the results.
         A xml template for querying biomart. (see https://gist.github.com/keithshep/7776579)
-        
-        exampleTaxonomy = "mmusculus_gene_ensembl"
-        exampleGene = "ENSMUSG00000086981,ENSMUSG00000086982,ENSMUSG00000086983"
-        urlTemplate = \
-        '''http://ensembl.org/biomart/martservice?query=''' \
-        '''<?xml version="1.0" encoding="UTF-8"?>''' \
-        '''<!DOCTYPE Query>''' \
-        '''<Query virtualSchemaName="default" formatter="CSV" header="0" uniqueRows="0" count="" datasetConfigVersion="0.6">''' \
-        '''<Dataset name="%s" interface="default"><Filter name="ensembl_gene_id" value="%s"/>''' \
-        '''<Attribute name="ensembl_gene_id"/><Attribute name="ensembl_transcript_id"/>''' \
-        '''<Attribute name="transcript_start"/><Attribute name="transcript_end"/>''' \
-        '''<Attribute name="exon_chrom_start"/><Attribute name="exon_chrom_end"/>''' \
-        '''</Dataset>''' \
-        '''</Query>''' 
-        
-        exampleURL = urlTemplate % (exampleTaxonomy, exampleGene)
-        req = requests.get(exampleURL, stream=True)
+        Example::
+        >>> import requests
+        >>> exampleTaxonomy = "mmusculus_gene_ensembl"
+        >>> exampleGene = "ENSMUSG00000086981,ENSMUSG00000086982,ENSMUSG00000086983"
+        >>> urlTemplate = \
+            '''http://ensembl.org/biomart/martservice?query=''' \
+            '''<?xml version="1.0" encoding="UTF-8"?>''' \
+            '''<!DOCTYPE Query>''' \
+            '''<Query virtualSchemaName="default" formatter="CSV" header="0" uniqueRows="0" count="" datasetConfigVersion="0.6">''' \
+            '''<Dataset name="%s" interface="default"><Filter name="ensembl_gene_id" value="%s"/>''' \
+            '''<Attribute name="ensembl_gene_id"/><Attribute name="ensembl_transcript_id"/>''' \
+            '''<Attribute name="transcript_start"/><Attribute name="transcript_end"/>''' \
+            '''<Attribute name="exon_chrom_start"/><Attribute name="exon_chrom_end"/>''' \
+            '''</Dataset>''' \
+            '''</Query>'''    
+        >>> exampleURL = urlTemplate % (exampleTaxonomy, exampleGene)
+        >>> req = requests.get(exampleURL, stream=True)
                    
         """
         if not attributes: 
-            attributes = ['ensembl_gene_id', 'external_gene_name', 'entrezgene', 'go_id'] 
-        # i=0
-        # while (self.host is None) and (i < 3):
-        #     self.host = self.ghosts[i]
-        #     i +=1 
+            attributes = ['ensembl_gene_id', 'external_gene_name', 'entrezgene_id', 'go_id'] 
+
         self.new_query()
         # 'mmusculus_gene_ensembl'
         self.add_dataset_to_xml(dataset)
@@ -285,17 +298,24 @@ class Biomart(BioMart):
         # add filters
         if filters:
             for k, v in filters.items(): 
-                if isinstance(v, list): v = ",".join(v)
+                if isinstance(v, str) or not isinstance(v, Iterable): continue
+                v = ",".join(list(v))
                 self.add_filter_to_xml(k, v)
 
         xml_query = self.get_xml()
         results = super(Biomart, self).query(xml_query)
         df = pd.read_csv(StringIO(results), header=None, sep="\t",
                          names=attributes, index_col=None)
-        # save file to cache path.
-        if filename is None: 
-            mkdirs(DEFAULT_CACHE_PATH)
-            filename = os.path.join(DEFAULT_CACHE_PATH, "{}.background.genes.txt".format(dataset))
-        df.to_csv(filename, sep="\t", index=False)
-      
-        return df
+        if 'entrezgene_id' in attributes:
+            df['entrezgene_id'] = df['entrezgene_id'].astype(pd.Int32Dtype())
+
+        self.results = df
+        if hasattr(sys, 'ps1') and (filename is None):
+            return df
+         # save file to cache path.
+        if filename is not None: 
+            #mkdirs(DEFAULT_CACHE_PATH)
+            #filename = os.path.join(DEFAULT_CACHE_PATH, "{}.background.genes.txt".format(dataset))       
+            df.to_csv(filename, sep="\t", index=False)
+
+        return 

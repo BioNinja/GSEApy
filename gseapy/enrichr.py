@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# see: http://amp.pharm.mssm.edu/Enrichr/help#api for API docs
+# see: %s/Enrichr/help#api for API docs
 
 import sys, json, os, logging
 import requests
@@ -16,6 +16,7 @@ from gseapy.parser import Biomart
 from gseapy.utils import *
 from gseapy.stats import calc_pvalues, multiple_testing_correction
 
+ENRICHR_URL = 'http://maayanlab.cloud/Enrichr/'
 
 class Enrichr(object):
     """Enrichr API"""
@@ -157,7 +158,7 @@ class Enrichr(object):
         '''
         Compare the genes sent and received to get successfully recognized genes
         '''
-        response = requests.get('http://amp.pharm.mssm.edu/%s/view?userListId=%s' %(self._organism, usr_list_id))
+        response = requests.get('%s/%s/view?userListId=%s' %(ENRICHR_URL,self._organism, usr_list_id))
         if not response.ok:
             raise Exception('Error getting gene list back')
         returnedL = json.loads(response.text)["genes"]
@@ -166,11 +167,11 @@ class Enrichr(object):
 
     def get_results(self, gene_list):
         """Enrichr API"""
-        ADDLIST_URL = 'http://amp.pharm.mssm.edu/%s/addList'%self._organism
+        ADDLIST_URL = '%s/addList'%ENRICHR_URL
         job_id = self.send_genes(gene_list, ADDLIST_URL)
         user_list_id = job_id['userListId']
-
-        RESULTS_URL = 'http://amp.pharm.mssm.edu/%s/export'%self._organism
+       
+        RESULTS_URL = '%s/export'%ENRICHR_URL
         query_string = '?userListId=%s&filename=%s&backgroundType=%s'
         # set max retries num =5
         s = retry(num=5)
@@ -180,8 +181,23 @@ class Enrichr(object):
         response.encoding = 'utf-8'
         if not response.ok:
             self._logger.error('Error fetching enrichment results: %s'%self._gs)
-        
-        res = pd.read_csv(StringIO(response.text), sep="\t")
+
+        try:
+            res = pd.read_csv(StringIO(response.text), sep="\t")
+        except pd.errors.ParserError as e:
+            RESULTS_URL = '%s/Enrichr/enrich'%ENRICHR_URL
+            query_string = '?userListId=%s&backgroundType=%s'
+            url = RESULTS_URL + query_string % (user_list_id, self._gs)
+            response = s.get(url)
+            if not response.ok:
+                self._logger.error('Error fetching enrichment results: %s'%self._gs)
+            data = json.loads(response.text)
+            colnames = ["Rank","Term", "P-value", "Z-score", "Combined Score", 
+                        "Genes", "Adjusted P-value", 
+                        "Old P-value", "Old adjusted P-value"]
+            res = pd.DataFrame(data[self._gs], columns=colnames)
+            res['Genes'] = res['Genes'].apply(";".join) 
+
         return [job_id['shortId'], res]
 
     def _is_entrez_id(self, idx):
@@ -194,7 +210,7 @@ class Enrichr(object):
     def get_libraries(self):
         """return active enrichr library name. Official API """
 
-        lib_url='http://amp.pharm.mssm.edu/%s/datasetStatistics'%self._organism
+        lib_url='%s/datasetStatistics'%ENRICHR_URL
         response = requests.get(lib_url)
         if not response.ok:
             raise Exception("Error getting the Enrichr libraries")
@@ -216,10 +232,7 @@ class Enrichr(object):
         
         # package included data
         DB_FILE = resource_filename("gseapy", "data/{}.background.genes.txt".format(self.background))
-        filename = os.path.join(DEFAULT_CACHE_PATH, "{}.background.genes.txt".format(self.background))  
-        if os.path.exists(filename):
-            df = pd.read_csv(filename,sep="\t")
-        elif os.path.exists(DB_FILE):
+        if os.path.exists(DB_FILE):
             df = pd.read_csv(DB_FILE,sep="\t")
         else:
             # background is a biomart database name
@@ -227,11 +240,11 @@ class Enrichr(object):
             bm = Biomart()
             df = bm.query(dataset=self.background)
             df.dropna(subset=['go_id'], inplace=True)
-        self._logger.info("using all annotated genes with GO_ID as background genes")
-        df.dropna(subset=['entrezgene'], inplace=True)     
+        self._logger.info("Using all annotated genes with GO_ID as background: %s"%self.background)
+        df.dropna(subset=['entrezgene_id'], inplace=True)     
         # input id type: entrez or gene_name
         if self._isezid:
-            bg = df['entrezgene'].astype(int)
+            bg = df['entrezgene_id'].astype(int)
         else:
             bg = df['external_gene_name']
 
@@ -248,32 +261,49 @@ class Enrichr(object):
 
         """
 
-        default = [ 'human','mouse','hs', 'mm',
-                    'homo sapiens', 'mus musculus',
-                    'h. sapiens', 'm. musculus']
+        raise NotImplementedError("Enrichr doesn't loger support organism")
 
-        if self.organism.lower() in default:
-            self._organism = 'Enrichr'
-            return
+        # default = [ 'human','mouse','hs', 'mm',
+        #             'homo sapiens', 'mus musculus',
+        #             'h. sapiens', 'm. musculus']
 
-        organism = {
-                    'Fly': ['fly', 'd. melanogaster', 'drosophila melanogaster'],
-                    'Yeast': ['yeast', 's. cerevisiae', 'saccharomyces cerevisiae'],
-                    'Worm': ['worm', 'c. elegans', 'caenorhabditis elegans', 'nematode'],
-                    'Fish': ['fish', 'd. rerio', 'danio rerio', 'zebrafish']
-                  }
+        # if self.organism.lower() in default:
+        #     self._organism = 'Enrichr'
+        #     return
 
-        for k, v in organism.items():
-            if self.organism.lower() in v :
-                self._organism = k+'Enrichr'
-                return
+        # organism = {
+        #             'Fly': ['fly', 'd. melanogaster', 'drosophila melanogaster'],
+        #             'Yeast': ['yeast', 's. cerevisiae', 'saccharomyces cerevisiae'],
+        #             'Worm': ['worm', 'c. elegans', 'caenorhabditis elegans', 'nematode'],
+        #             'Fish': ['fish', 'd. rerio', 'danio rerio', 'zebrafish']
+        #           }
+
+        # for k, v in organism.items():
+        #     if self.organism.lower() in v :
+        #         self._organism = k+'Enrichr'
+        #         return
  
-        if self._organism is None:
-            raise Exception("No supported organism found !!!")
-        return
+        # if self._organism is None:
+        #     raise Exception("No supported organism found !!!")
+        # return
+
+    def filter_gmt(self, gmt, background):
+        """the gmt values should be filtered only for genes that exist in background
+           this substantially affect the significance of the test, the hypergeometric distribution.
+
+           :param gmt: a dict of gene sets.
+           :param background: list, set, or tuple. A list of custom backgound genes.  
+        """
+        gmt2 = {}
+        for term, genes in gmt.items():
+            # If value satisfies the condition, then store it in new_dict
+            newgenes = [g for g in genes if g in background]
+            if len(newgenes) > 0:
+                gmt2[term] = newgenes 
+        return gmt2
 
     def enrich(self, gmt):
-        """use local mode
+        f"""use local mode
          
         p = p-value computed using the Fisher exact test (Hypergeometric test)  
 
@@ -281,7 +311,7 @@ class Enrichr(object):
 
             combine score = log(p)·z
 
-        see here: http://amp.pharm.mssm.edu/Enrichr/help#background&q=4
+        see here: {ENRICHR_URL}/Enrichr/help#background&q=4
         
         columns contain:
             
@@ -328,16 +358,16 @@ class Enrichr(object):
         """run enrichr for one sample gene list but multi-libraries"""
 
         # set organism
-        self.get_organism()
+        #self.get_organism()
         # read input file
         genes_list = self.parse_genelists()
         gss = self.parse_genesets()
         # if gmt
         self._logger.info("Connecting to Enrichr Server to get latest library names")
         if len(gss) < 1:
-            sys.stderr.write("Not validated Enrichr library name provided\n")
-            sys.stdout.write("Hint: use get_library_name() to view full list of supported names")
-            sys.exit(1)
+            self._logger.error("Hint: Current organism = %s, is this correct?\n"%self.organism +\
+                            "Hint: use get_library_name() to view full list of supported names.")
+            raise LookupError("Not validated Enrichr library! Please provide correct organism and library name!")
         self.results = pd.DataFrame()
 
         for g in gss: 
@@ -357,11 +387,11 @@ class Enrichr(object):
                 # Remember gene set library used
             res.insert(0, "Gene_set", self._gs)
             # Append to master dataframe
-            self.results = self.results.append(res, ignore_index=True, sort=True)
+            self.results = self.results.append(res, ignore_index=True)
             self.res2d = res
             if self._outdir is None: continue
             self._logger.info('Save file of enrichment results: Job Id:' + str(shortID))
-            outfile = "%s/%s.%s.%s.reports.txt" % (self.outdir, self._gs, self.descriptions, self.module)
+            outfile = "%s/%s.%s.%s.reports.txt" % (self.outdir, self._gs, self.organism, self.module)
             self.res2d.to_csv(outfile, index=False, encoding='utf-8', sep="\t")
             # plotting
             if not self.__no_plot:
@@ -382,30 +412,64 @@ def enrichr(gene_list, gene_sets, organism='human', description='',
             format='pdf', figsize=(8,6), top_term=10, no_plot=False, verbose=False):
     """Enrichr API.
 
-    :param gene_list: Flat file with list of genes, one gene id per row, or a python list object
-    :param gene_sets: Enrichr Library to query. Required enrichr library name(s). Separate each name by comma.
-    :param organism: Enrichr supported organism. Select from (human, mouse, yeast, fly, fish, worm).
-                     see here for details: https://amp.pharm.mssm.edu/modEnrichr
-    :param description: name of analysis. optional.
-    :param outdir: Output file directory
-    :param float cutoff: Show enriched terms which Adjusted P-value < cutoff. 
-                         Only affects the output figure. Default: 0.05
-    :param int background: BioMart dataset name for retrieving background gene information.
-                           This argument only works when gene_sets input is a gmt file or python dict.
-                           You could also specify a number by yourself, e.g. total expressed genes number.
-                           In this case, you will skip retrieving background infos from biomart.
-    
-    Use the code below to see valid background dataset names from BioMart.
-    Here are example code:
-    >>> from gseapy.parser import Biomart 
-    >>> bm = Biomart(verbose=False, host="asia.ensembl.org")
-    >>> ## view validated marts
-    >>> marts = bm.get_marts()
-    >>> ## view validated dataset
-    >>> datasets = bm.get_datasets(mart='ENSEMBL_MART_ENSEMBL')
+    :param gene_list: str, list, tuple, series, dataframe. Also support input txt file with one gene id per row. 
+                      The input `identifier` should be the same type to `gene_sets`.
 
-    :param str format: Output figure format supported by matplotlib,('pdf','png','eps'...). Default: 'pdf'.
-    :param list figsize: Matplotlib figsize, accept a tuple or list, e.g. (width,height). Default: (6.5,6).
+    :param gene_sets: str, list, tuple of Enrichr Library name(s). 
+                      or custom defined gene_sets (dict, or gmt file). 
+                      
+                      Examples: 
+
+                      Input Enrichr Libraries (https://maayanlab.cloud/Enrichr/#stats):
+                        str: 'KEGG_2016'
+                        list: ['KEGG_2016','KEGG_2013']
+                        Use comma to separate each other, e.g. "KEGG_2016,huMAP,GO_Biological_Process_2018"
+
+                      Input custom files:
+                        dict: gene_sets={'A':['gene1', 'gene2',...],
+                                        'B':['gene2', 'gene4',...], ...}
+                        gmt: "genes.gmt"
+
+                      see also the online docs: 
+                      https://gseapy.readthedocs.io/en/latest/gseapy_example.html#2.-Enrichr-Example
+
+
+    :param organism: Enrichr supported organism. Select from (human, mouse, yeast, fly, fish, worm).
+                     This argument only affects the Enrichr library names you've chosen.
+                     No any affects to gmt or dict input of `gene_sets`.
+
+                     see here for more details: https://amp.pharm.mssm.edu/modEnrichr.
+                     
+    :param description: optional. name of the job.
+    :param outdir:   Output file directory
+
+    :param background: int, list, str. Please ignore this argument if your input are just Enrichr library names.
+                       
+                       However, this argument is not straightforward when `gene_sets` is given a custom input (a gmt file or dict).
+                       There are 3 ways to set this argument:
+ 
+                       (1) (Recommended) Input a list of background genes. 
+                           The background gene list is defined by your experment. e.g. the expressed genes in your RNA-seq.
+                           The gene identifer in gmt/dict should be the same type to the backgound genes.  
+                       
+                       (2) Specify a number, e.g. the number of total expressed genes.
+                           This works, but not recommend. It assumes that all your genes could be found in background.
+                           If genes exist in gmt but not included in background, 
+                           they will affect the significance of the statistical test.  
+
+                       (3) (Default) Set a Biomart dataset name.
+                           The background will be all annotated genes from the `BioMart datasets` you've choosen. 
+                           The program will try to retrieve the background information automatically.
+
+                           Please Use the example code below to choose the correct dataset name:
+                            >>> from gseapy.parser import Biomart 
+                            >>> bm = Biomart()
+                            >>> datasets = bm.get_datasets(mart='ENSEMBL_MART_ENSEMBL')
+
+    :param cutoff:   Show enriched terms which Adjusted P-value < cutoff. 
+                     Only affects the output figure, not the final output file. Default: 0.05
+    :param format:  Output figure format supported by matplotlib,('pdf','png','eps'...). Default: 'pdf'.
+    :param figsize: Matplotlib figsize, accept a tuple or list, e.g. (width,height). Default: (6.5,6).
     :param bool no_plot: If equals to True, no figure will be drawn. Default: False.
     :param bool verbose: Increase output verbosity, print out progress of your job, Default: False.
 

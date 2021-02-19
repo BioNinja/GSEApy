@@ -2,16 +2,15 @@
 
 import sys, logging
 import numpy as np
-from functools import reduce
-from multiprocessing import Pool
+#from functools import reduce
+#from multiprocessing import Pool
 from math import ceil
 from gseapy.stats import multiple_testing_correction
-
 from joblib import delayed, Parallel
 
 
 def enrichment_score(gene_list, correl_vector, gene_set, weighted_score_type=1, 
-                     nperm=1000, rs=np.random.RandomState(), single=False, scale=False):
+                     nperm=1000, rs=None, single=False, scale=False):
     """This is the most important function of GSEApy. It has the same algorithm with GSEA and ssGSEA.
 
     :param gene_list:       The ordered gene list gene_name_list, rank_metric.index.values
@@ -29,7 +28,7 @@ def enrichment_score(gene_list, correl_vector, gene_set, weighted_score_type=1,
                             the gene list. Or rankings, rank_metric.values
     :param nperm:           Only use this parameter when computing esnull for statistical testing. Set the esnull value
                             equal to the permutation number.
-    :param rs:              Random state for initializing gene list shuffling. Default: np.random.RandomState(seed=None)
+    :param rs:              Random state for initializing gene list shuffling. Default: seed=None
 
     :return:
 
@@ -42,7 +41,6 @@ def enrichment_score(gene_list, correl_vector, gene_set, weighted_score_type=1,
      RES: Numerical vector containing the running enrichment score for all locations in the gene list .
 
     """
-
     N = len(gene_list)
     # Test whether each element of a 1-D array is also present in a second array
     # It's more intuitive here than original enrichment_score source code.
@@ -63,6 +61,7 @@ def enrichment_score(gene_list, correl_vector, gene_set, weighted_score_type=1,
     tag_indicator = np.tile(tag_indicator, (nperm+1,1))
     correl_vector = np.tile(correl_vector,(nperm+1,1))
     # gene list permutation
+    rs = np.random.RandomState(rs)
     for i in range(nperm): rs.shuffle(tag_indicator[i])
     # np.apply_along_axis(rs.shuffle, 1, tag_indicator)
 
@@ -90,7 +89,7 @@ def enrichment_score(gene_list, correl_vector, gene_set, weighted_score_type=1,
 
 
 def enrichment_score_tensor(gene_mat, cor_mat, gene_sets, weighted_score_type, nperm=1000,
-                            rs=np.random.RandomState(), single=False, scale=False):
+                            rs=None, single=False, scale=False):
     """Next generation algorithm of GSEA and ssGSEA.
 
         :param gene_mat:        the ordered gene list(vector) with or without gene indices matrix.
@@ -103,7 +102,7 @@ def enrichment_score_tensor(gene_mat, cor_mat, gene_sets, weighted_score_type, n
         :param bool scale:      If True, normalize the scores by number of genes_mat.
         :param bool single:     If True, use ssGSEA algorithm, otherwise use GSEA.
         :param rs:              Random state for initialize gene list shuffling.
-                                Default: np.random.RandomState(seed=None)
+                                Default: seed=None
         :return: a tuple contains::
 
                  | ES: Enrichment score (real number between -1 and +1), for ssGSEA, set scale eq to True.
@@ -112,6 +111,7 @@ def enrichment_score_tensor(gene_mat, cor_mat, gene_sets, weighted_score_type, n
                  | RES: The running enrichment score for all locations in the gene list.
 
     """
+    rs = np.random.RandomState(rs)
     # gene_mat -> 1d: prerank, ssSSEA or 2d: GSEA
     keys = sorted(gene_sets.keys())
 
@@ -192,12 +192,12 @@ def enrichment_score_tensor(gene_mat, cor_mat, gene_sets, weighted_score_type, n
 
 
 def ranking_metric_tensor(exprs, method, permutation_num, pos, neg, classes,
-                          ascending, rs=np.random.RandomState()):
+                          ascending, rs=None):
     """Build shuffled ranking matrix when permutation_type eq to phenotype.
 
        :param exprs:   gene_expression DataFrame, gene_name indexed.
        :param str method:  calculate correlation or ranking. methods including:
-                           1. 'signal_to_noise'.
+                           1. 'signal_to_noise' (s2n) or 'abs_signal_to_noise' (abs_s2n).
                            2. 't_test'.
                            3. 'ratio_of_classes' (also referred to as fold change).
                            4. 'diff_of_classes'.
@@ -216,6 +216,7 @@ def ranking_metric_tensor(exprs, method, permutation_num, pos, neg, classes,
                 | cor_mat: sorted and permutated (exclude last row) ranking matrix.
 
     """
+    rs = np.random.RandomState(rs)
     # S: samples, G: gene number
     G, S = exprs.shape
     # genes = exprs.index.values
@@ -231,8 +232,10 @@ def ranking_metric_tensor(exprs, method, permutation_num, pos, neg, classes,
     pos_cor_std = perm_cor_tensor[:,pos,:].std(axis=1, ddof=1)
     neg_cor_std = perm_cor_tensor[:,neg,:].std(axis=1, ddof=1)
 
-    if method == 'signal_to_noise':
+    if method in ['signal_to_noise', 's2n']:
         cor_mat = (pos_cor_mean - neg_cor_mean)/(pos_cor_std + neg_cor_std)
+    elif method in ['abs_signal_to_noise', 'abs_s2n']:
+        cor_mat = np.abs((pos_cor_mean - neg_cor_mean)/(pos_cor_std + neg_cor_std))
     elif method == 't_test':
         denom = 1.0/G
         cor_mat = (pos_cor_mean - neg_cor_mean)/ np.sqrt(denom*pos_cor_std**2 + denom*neg_cor_std**2)
@@ -262,11 +265,12 @@ def ranking_metric(df, method, pos, neg, classes, ascending):
        :param method:  The method used to calculate a correlation or ranking. Default: 'log2_ratio_of_classes'.
                        Others methods are:
 
-                       1. 'signal_to_noise'
+                       1. 'signal_to_noise' (s2n) or 'abs_signal_to_noise' (abs_s2n)
 
                           You must have at least three samples for each phenotype to use this metric.
                           The larger the signal-to-noise ratio, the larger the differences of the means (scaled by the standard deviations);
                           that is, the more distinct the gene expression is in each phenotype and the more the gene acts as a “class marker.”
+                       
 
                        2. 't_test'
 
@@ -304,8 +308,10 @@ def ranking_metric(df, method, pos, neg, classes, ascending):
     df_mean = df.groupby(by=classes, axis=1).mean()
     df_std =  df.groupby(by=classes, axis=1).std()
 
-    if method == 'signal_to_noise':
+    if method in ['signal_to_noise', 's2n']:
         ser = (df_mean[pos] - df_mean[neg])/(df_std[pos] + df_std[neg])
+    elif method in ['abs_signal_to_noise', 'abs_s2n']:
+        ser = ((df_mean[pos] - df_mean[neg])/(df_std[pos] + df_std[neg])).abs()
     elif method == 't_test':
         ser = (df_mean[pos] - df_mean[neg])/ np.sqrt(df_std[pos]**2/len(df_std)+df_std[neg]**2/len(df_std) )
     elif method == 'ratio_of_classes':
@@ -354,14 +360,17 @@ def gsea_compute_tensor(data, gmt, n, weighted_score_type, permutation_type,
     base = 5 if data.shape[0] >= 5000 else 10
     block = ceil(len(subsets) / base)
 
+    np.random.seed(seed)
+    random_state = np.random.randint(np.iinfo(np.int32).max, size=block)
+
     if permutation_type == "phenotype":
         # shuffling classes and generate random correlation rankings
         logging.debug("Start to permutate classes..............................")
         genes_ind = []
         cor_mat = []
 
-        temp_rnk = Parallel()(delayed(ranking_metric_tensor)(
-            data, method, base, pheno_pos, pheno_neg, classes, ascending, rs) for _ in range(block))
+        temp_rnk = Parallel(n_jobs=processes)(delayed(ranking_metric_tensor)(
+            data, method, base, pheno_pos, pheno_neg, classes, ascending, rs) for rs in random_state)
 
         for k, temp in enumerate(temp_rnk):
             gi, cor = temp
@@ -383,24 +392,32 @@ def gsea_compute_tensor(data, gmt, n, weighted_score_type, permutation_type,
     hit_ind = []
     esnull = []
     temp_esnu = []
-    pool_esnu = Pool(processes=processes)
+    #pool_esnu = Pool(processes=processes)
     # split large array into smaller blocks to avoid memory overflow
     i, m = 1, 0
+    gmt_block = []
     while i <= block:
         # you have to reseed, or all your processes are sharing the same seed value
-        rs = np.random.RandomState(seed)
+        rs = random_state[i-1]
         gmtrim = {k: gmt.get(k) for k in subsets[m:base * i]}
-        temp_esnu.append(pool_esnu.apply_async(enrichment_score_tensor,
-                                               args=(genes_mat, cor_mat,
-                                                     gmtrim, w, n, rs,
-                                                     single, scale)))
+        gmt_block.append(gmtrim)
+        # temp_esnu.append(pool_esnu.apply_async(enrichment_score_tensor,
+                                            #    args=(genes_mat, cor_mat,
+                                            #          gmtrim, w, n, rs,
+                                            #          single, scale)))
         m = base * i
         i += 1
-    pool_esnu.close()
-    pool_esnu.join()
+    # use joblib
+    temp_esnu = Parallel(n_jobs=processes)(delayed(enrichment_score_tensor)(
+                    genes_mat, cor_mat, gmtrim, w, n, rs, single, scale) 
+                    for gmtrim, rs in zip(gmt_block, random_state))
+    # pool_esnu.close()
+    # pool_esnu.join()
+
     # esn is a list, don't need to use append method.
     for si, temp in enumerate(temp_esnu):
-        e, enu, hit, rune = temp.get()
+        # e, enu, hit, rune = temp.get()
+        e, enu, hit, rune = temp
         esnull.append(enu)
         es.append(e)
         RES.append(rune)
@@ -479,19 +496,26 @@ def gsea_compute(data, gmt, n, weighted_score_type, permutation_type,
 
         # split large array into smaller blocks to avoid memory overflow
         temp_esnu=[]
-        pool_esnu = Pool(processes=processes)
-        for subset in subsets:
-            # you have to reseed, or all your processes are sharing the same seed value
-            rs = np.random.RandomState(seed)
-            temp_esnu.append(pool_esnu.apply_async(enrichment_score,
-                                                   args=(gl, cor_vec, gmt.get(subset), w,
-                                                         n, rs, single, scale)))
+        #pool_esnu = Pool(processes=processes)
+        # you have to reseed, or all your processes are sharing the same seed value
+        np.random.seed(seed)
+        random_state = np.random.randint(np.iinfo(np.int32).max, size=len(subsets))
+        # for subset, rs in zip(subsets, random_state):
+        #     temp_esnu.append(pool_esnu.apply_async(enrichment_score,
+        #                                            args=(gl, cor_vec, gmt.get(subset), w,
+        #                                                  n, rs, single, scale)))
 
-        pool_esnu.close()
-        pool_esnu.join()
+        # pool_esnu.close()
+        # pool_esnu.join()
+
+        temp_esnu = Parallel(n_jobs=processes)(delayed(enrichment_score)(
+                        gl, cor_vec, gmt.get(subset), w, n, 
+                        rs, single, scale) 
+                        for subset, rs in zip(subsets, random_state))        
         # esn is a list, don't need to use append method.
         for si, temp in enumerate(temp_esnu):
-            e, enu, hit, rune = temp.get()
+            #e, enu, hit, rune = temp.get()
+            e, enu, hit, rune = temp
             esnull[si] = enu
             es.append(e)
             RES.append(rune)
@@ -509,24 +533,37 @@ def normalize(es, esnull):
 
     nEnrichmentScores =np.zeros(es.shape)
     nEnrichmentNulls=np.zeros(esnull.shape)
+    # esnullmean = np.zeros(es.shape)
+    # # calculate nESnulls
+    # for i in range(esnull.shape[0]):
+    #     # NES
+    #     enrNull = esnull[i]
+    #     if es[i] >= 0:
+    #         mes = enrNull[enrNull >= 0].mean()
+    #         nEnrichmentScores[i] = es[i] / mes
+    #     else:
+    #         mes = enrNull[enrNull < 0 ].mean()
+    #         nEnrichmentScores[i] = - es[i] / mes
+    #     esnullmean[i] = mes
 
-    esnull_pos = (esnull * (esnull >= 0)).mean(axis=1)
-    esnull_neg = (esnull * (esnull < 0)).mean(axis=1)
-    # calculate nESnulls
-    for i in range(esnull.shape[0]):
-        # NES
-        if es[i] >= 0:
-            nEnrichmentScores[i] = es[i] / esnull_pos[i]
-        else:
-            nEnrichmentScores[i] = - es[i] / esnull_neg[i]
+    #     # NESnull
+    #     for j in range(esnull.shape[1]):
+    #         if esnull[i,j] >= 0:
+    #             nEnrichmentNulls[i,j] = esnull[i,j] / esnullmean[i]
+    #         else:
+    #             nEnrichmentNulls[i,j] = - esnull[i,j] / esnullmean[i]
 
-        # NESnull
-        for j in range(esnull.shape[1]):
-            if esnull[i,j] >= 0:
-                nEnrichmentNulls[i,j] = esnull[i,j] / esnull_pos[i]
-            else:
-                nEnrichmentNulls[i,j] = - esnull[i,j] / esnull_neg[i]
+    esnull_pos = np.ma.MaskedArray(esnull, mask=(esnull<0)).mean(axis=1)
+    esnull_neg = np.ma.MaskedArray(esnull, mask=(esnull>=0)).mean(axis=1)
+    esnull_pos = np.array(esnull_pos)
+    esnull_neg = np.array(esnull_neg)
 
+    # NES
+    nEnrichmentScores  = np.where(es>=0, es/esnull_pos, -es/esnull_neg)
+    # NES_NULL
+    nEnrichmentNulls = np.where(esnull>=0, esnull/esnull_pos[:,np.newaxis],
+                                          -esnull/esnull_neg[:,np.newaxis])
+    
     return nEnrichmentScores, nEnrichmentNulls
 
 def gsea_pval(es, esnull):
@@ -618,14 +655,7 @@ def gsea_significance(enrichment_scores, enrichment_nulls):
 
     logging.debug("Start to compute nes and nesnull........................")
     # NES
-    # nEnrichmentScores, nEnrichmentNulls = normalize(es, esnull)
-    # new normalized enrichment score implementation.
-    # this could speed up significantly.
-    esnull_pos = (esnull*(esnull>=0)).mean(axis=1)
-    esnull_neg = (esnull*(esnull<0)).mean(axis=1)
-    nEnrichmentScores  = np.where(es>=0, es/esnull_pos, -es/esnull_neg)
-    nEnrichmentNulls = np.where(esnull>=0, esnull/esnull_pos[:,np.newaxis],
-                                          -esnull/esnull_neg[:,np.newaxis])
+    nEnrichmentScores, nEnrichmentNulls = normalize(es, esnull)
 
     logging.debug("Start to compute fdrs..................................")
     # FDR

@@ -3,8 +3,8 @@
 
 import os, sys, logging, json, glob
 from collections import OrderedDict
-from multiprocessing import Pool, cpu_count
 from tempfile import TemporaryDirectory
+from joblib import delayed, Parallel
 from numpy import log, exp
 import numpy as np
 import pandas as pd
@@ -56,7 +56,7 @@ class GSEAbase(object):
     def _set_cores(self):
         """set cpu numbers to be used"""
 
-        cpu_num = cpu_count()-1
+        cpu_num = os.cpu_count()-1
         if self._processes > cpu_num:
             cores = cpu_num
         elif self._processes < 1:
@@ -137,7 +137,7 @@ class GSEAbase(object):
         if filsets_num == len(subsets):
             self._logger.error("No gene sets passed through filtering condition!!!, try new parameters again!\n" +\
                                "Note: check gene name, gmt file format, or filtering size." )
-            sys.exit(0)
+            raise Exception("No gene sets passed through filtering condition")
 
         self._gmtdct=genesets_dict
         return genesets_dict
@@ -157,7 +157,7 @@ class GSEAbase(object):
             pass
         else:
             self._logger.error("No supported gene_sets: %s"%gmt)
-            sys.exit(0)
+            raise Exception("No supported gene_sets: %s"%gmt)
 
         tmpname = "enrichr." + gmt + ".gmt"
         tempath = os.path.join(DEFAULT_CACHE_PATH, tmpname)
@@ -209,13 +209,12 @@ class GSEAbase(object):
 
     def _heatmat(self, df, classes, pheno_pos, pheno_neg):
         """only use for gsea heatmap"""
-        width = len(classes) if len(classes) >= 6 else  5
+        
         cls_booA =list(map(lambda x: True if x == pheno_pos else False, classes))
         cls_booB =list(map(lambda x: True if x == pheno_neg else False, classes))
         datA = df.loc[:, cls_booA]
         datB = df.loc[:, cls_booB]
         datAB=pd.concat([datA,datB], axis=1)
-        self._width = width
         self.heatmat = datAB
         return
 
@@ -233,31 +232,38 @@ class GSEAbase(object):
         #Plotting
         top_term = self.res2d.index[:graph_num]
         # multi-threading
-        pool = Pool(self._processes)
+        #pool = Pool(self._processes)
         for gs in top_term:
             hit = results.get(gs)['hit_indices']
             NES = 'nes' if self.module != 'ssgsea' else 'es'
             term = gs.replace('/','_').replace(":","_")
             outfile = '{0}/{1}.{2}.{3}'.format(self.outdir, term, self.module, self.format)
-            # gseaplot(rank_metric=rank_metric, term=term, hit_indices=hit,
-            #           nes=results.get(gs)[NES], pval=results.get(gs)['pval'], 
-            #           fdr=results.get(gs)['fdr'], RES=results.get(gs)['RES'],
-            #           pheno_pos=pheno_pos, pheno_neg=pheno_neg, figsize=figsize,
-            #           ofname=outfile)
-            pool.apply_async(gseaplot, args=(rank_metric, term, hit, results.get(gs)[NES],
-                                              results.get(gs)['pval'],results.get(gs)['fdr'],
-                                              results.get(gs)['RES'],
-                                              pheno_pos, pheno_neg, 
-                                              figsize, 'seismic', outfile))
+
+            # if self.module != 'ssgsea' and results.get(gs)['fdr'] > 0.05:
+            #     continue
+            gseaplot(rank_metric=rank_metric, term=term, hit_indices=hit,
+                      nes=results.get(gs)[NES], pval=results.get(gs)['pval'], 
+                      fdr=results.get(gs)['fdr'], RES=results.get(gs)['RES'],
+                      pheno_pos=pheno_pos, pheno_neg=pheno_neg, figsize=figsize,
+                      ofname=outfile)
+            # pool.apply_async(gseaplot, args=(rank_metric, term, hit, results.get(gs)[NES],
+            #                                   results.get(gs)['pval'],results.get(gs)['fdr'],
+            #                                   results.get(gs)['RES'],
+            #                                   pheno_pos, pheno_neg, 
+            #                                   figsize, 'seismic', outfile))
             if self.module == 'gsea':
                 outfile2 = "{0}/{1}.heatmap.{2}".format(self.outdir, term, self.format)
-                # heatmap(df=self.heatmat.iloc[hit, :], title=term, ofname=outfile2, 
-                #         z_score=0, figsize=(self._width, len(hit)/2))
-                pool.apply_async(heatmap, args=(self.heatmat.iloc[hit, :], 0, term, 
-                                               (self._width, len(hit)/2+2), 'RdBu_r',
-                                                True, True, outfile2))
-        pool.close()
-        pool.join()
+                heatmat = self.heatmat.iloc[hit, :]
+                width = np.clip(heatmat.shape[1], 4, 20)
+                height = np.clip(heatmat.shape[0], 4, 20)
+                heatmap(df=heatmat, title=term, ofname=outfile2, 
+                        z_score=0, figsize=(width, height), 
+                        xticklabels=True, yticklabels=True)
+                # pool.apply_async(heatmap, args=(self.heatmat.iloc[hit, :], 0, term, 
+                #                                (self._width, len(hit)/2+2), 'RdBu_r',
+                #                                 True, True, outfile2))
+        # pool.close()
+        # pool.join()
 
        
     def _save_results(self, zipdata, outdir, module, gmt, rank_metric, permutation_type):
@@ -319,7 +325,7 @@ class GSEAbase(object):
 
 class GSEA(GSEAbase):
     """GSEA main tool"""
-    def __init__(self, data, gene_sets, classes, outdir='GSEA_ouput',
+    def __init__(self, data, gene_sets, classes, outdir='GSEA_output',
                  min_size=15, max_size=500, permutation_num=1000,
                  weighted_score_type=1, permutation_type='gene_set',
                  method='log2_ratio_of_classes', ascending=False,
@@ -391,7 +397,8 @@ class GSEA(GSEAbase):
 
     def run(self):
         """GSEA main procedure"""
-
+        assert self.method in ['signal_to_noise', 's2n', 'abs_signal_to_noise', 'abs_s2n',
+                               't_test', 'ratio_of_classes', 'diff_of_classes', 'log2_ratio_of_classes']
         assert self.permutation_type in ["phenotype", "gene_set"]
         assert self.min_size <= self.max_size
 
@@ -625,8 +632,7 @@ class SingleSampleGSEA(GSEAbase):
             self._logger.info("Use custom rank metric for ssGSEA")
             data = dat
         else:
-            sys.stderr.write("No supported method: %s"%self.sample_norm_method)
-            sys.exit(0)
+            raise Exception("No supported method: %s"%self.sample_norm_method)
 
         return data
 
@@ -710,30 +716,44 @@ class SingleSampleGSEA(GSEAbase):
         # run ssgsea for gct expression matrix
         #multi-threading
         subsets = sorted(gmt.keys())
+        tempdat=[]
         tempes=[]
         names=[]
         rankings=[]
-        pool = Pool(processes=self._processes)
+        #pool = Pool(processes=self._processes)
+        np.random.seed(self.seed)
+        random_state = np.random.randint(np.iinfo(np.int32).max, size=df.shape[1])
         for name, ser in df.iteritems():
             #prepare input
             dat = ser.sort_values(ascending=self.ascending)
+            tempdat.append(dat)
             rankings.append(dat)
             names.append(name)
-            genes_sorted, cor_vec = dat.index.values, dat.values
-            rs = np.random.RandomState(self.seed)
-            # apply_async
-            tempes.append(pool.apply_async(enrichment_score_tensor,
-                                           args=(genes_sorted, cor_vec, gmt,
+            # genes_sorted, cor_vec = dat.index.values, dat.values
+            # #rs = np.random.RandomState(self.seed)
+            # # apply_async
+            # tempes.append(pool.apply_async(enrichment_score_tensor,
+            #                                args=(genes_sorted, cor_vec, gmt,
+            #                                    self.weighted_score_type,
+            #                                    self.permutation_num, self.seed, True,
+            #                                    self.scale)))
+        # pool.close()
+        # pool.join()
+
+        tempes = Parallel(n_jobs=self._processes)(
+                             delayed(enrichment_score_tensor)(
+                                               dat.index.values, dat.values, gmt,
                                                self.weighted_score_type,
                                                self.permutation_num, rs, True,
-                                               self.scale)))
-        pool.close()
-        pool.join()
+                                               self.scale) 
+                             for dat, rs in zip(tempdat, random_state))
+
         # save results and plotting
         for i, temp in enumerate(tempes):
             name, rnk = names[i], rankings[i]
             self._logger.info("Calculate Enrichment Score for Sample: %s "%name)
-            es, esnull, hit_ind, RES = temp.get()
+            # es, esnull, hit_ind, RES = temp.get()
+            es, esnull, hit_ind, RES = temp
             # create results subdir
             self.outdir= os.path.join(outdir, str(name))
             mkdirs(self.outdir)
@@ -816,8 +836,7 @@ class Replot(GSEAbase):
             rank_path =  glob.glob(self.indir+'*/edb/*.rnk')[0]
             gene_set_path =  glob.glob(self.indir+'*/edb/gene_sets.gmt')[0]
         except IndexError as e:
-            sys.stderr.write("Could not locate GSEA files in the given directory!")
-            sys.exit(1)
+            raise Exception("Could not locate GSEA files in the given directory!")
         # extract sample names from .cls file
         cls_path = glob.glob(self.indir+'*/edb/*.cls')
         if cls_path:
